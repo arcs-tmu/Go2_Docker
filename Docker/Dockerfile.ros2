@@ -1,5 +1,13 @@
 # syntax=docker/dockerfile:1
 
+# sudo docker build -f Dockerfile.ros2 -t ros2-foxy .
+
+# Example Run:
+#   sudo docker run --rm -it \
+#    -v "$(pwd)/config:/config" \
+#    --network host \
+#    ros2-foxy
+
 # ROS 2 Foxy Fitzroy targets Ubuntu 20.04 (Focal Fossa)
 ARG UBUNTU_VERSION=20.04
 FROM ubuntu:${UBUNTU_VERSION}
