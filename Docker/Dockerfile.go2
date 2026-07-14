@@ -1,179 +1,95 @@
+# syntax=docker/dockerfile:1
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Build-time flags  (pass with --build-arg FLAG=true)
+# Go2 Robot Dev Environment (Fully Integrated Stack)
 #
-#   BUILD_TARGET=local|bot   (default: local)
-#     local  -> plain ROS 2 Foxy desktop install for dev on your laptop.
-#               No Unitree SDK, no custom CycloneDDS build, no unitree_ros2
-#               workspace. Fast build, good for writing/testing nodes that
-#               talk to the real robot over the network later.
-#     bot    -> full original build: clones + builds unitree_sdk2(_python),
-#               builds CycloneDDS from source, builds rmw_cyclonedds in the
-#               unitree_ros2 workspace. This is what actually ships on/with
-#               the robot's docker.
+# Builds CycloneDDS from source, compiles unitree_sdk2, installs unitree_sdk2_python,
+# and builds the custom rmw_cyclonedds workspace.
 #
-#   INSTALL_PY_SDK=true   pip-install unitree_sdk2_python (needs CYCLONEDDS_HOME)
-#                          -> only takes effect when BUILD_TARGET=bot
-#   BUILD_SDK=true        cmake-build & install the C++ unitree_sdk2
-#                          -> only takes effect when BUILD_TARGET=bot
-#   ADD_USER=true         create a non-root sudo user (default: unitree/1000/1000)
-#     USERNAME=<name>       override the username          (default: unitree)
-#     USER_UID=<uid>        override the UID               (default: 1000)
-#     USER_GID=<gid>        override the GID               (default: 1000)
+# Build Command:
+#    docker build -t go2-bot .
 #
-# Example Build (laptop / local dev, default):
-#   docker build -t go2-local .
-#
-# Example Build (bot image, same as before):
-#   docker build \
-#     --build-arg BUILD_TARGET=bot \
-#     --build-arg INSTALL_PY_SDK=true \
-#     --build-arg ADD_USER=true \
-#     --build-arg USERNAME=teo \
-#     -t go2-bot .
-#
-# Example Run:
-#   sudo docker run --rm -it \
-#    -v ./config:/config \
-#    -e CYCLONEDDS_URI=/config/cyclonedds.xml \
-#    -e LANG=C.UTF-8 \
-#    -e LC_ALL=C.UTF-8 \
-#    --network host \
-#    go2-bot
-#
-# Edit config/cyclonedds.xml on the host to change the network interface.
+# Run Command:
+#    sudo docker run --rm -it \
+#     -v "$(pwd)/config:/config" \
+#     --network host \
+#     go2-bot
 # ══════════════════════════════════════════════════════════════════════════════
 
-ARG BUILD_TARGET=local
-ARG INSTALL_PY_SDK=false
-ARG BUILD_SDK=false
-ARG ADD_USER=false
-ARG USERNAME=unitree
-ARG USER_UID=1000
-ARG USER_GID=1000
-
-# ros:foxy already includes ros-base, rosdep, the entrypoint that sources
-# /opt/ros/foxy/setup.bash, and the correct Ubuntu 20.04 base.
 FROM ros:foxy
-
-ARG BUILD_TARGET
-ARG INSTALL_PY_SDK
-ARG BUILD_SDK
-ARG ADD_USER
-ARG USERNAME
-ARG USER_UID
-ARG USER_GID
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
-ENV BUILD_TARGET=${BUILD_TARGET}
 
-# ── Common dependencies (both local and bot) ───────────────────────────────────
+# ── 1. System Dependencies & Build Toolchain ──────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # CycloneDDS RMW wrapper (pairs with RMW_IMPLEMENTATION env var)
+    # ROS 2 Desktop and Workspace Tooling
+    ros-foxy-desktop \
     ros-foxy-rmw-cyclonedds-cpp \
-    # Python package manager
+    ros-foxy-rosidl-generator-dds-idl \
     python3-pip \
-    # ROS 2 workspace build toolchain
     python3-colcon-common-extensions \
     python3-vcstool \
     python3-rosdep \
-    # Full desktop: rviz2, rqt, tf2 tools, ros2 CLI extras
-    ros-foxy-desktop \
-    # Text editor
+    # Build Tools and Libraries
+    build-essential \
+    cmake \
+    git \
+    libpython3-dev \
+    libeigen3-dev \
+    libyaml-cpp-dev \
+    libboost-all-dev \
+    libspdlog-dev \
+    libfmt-dev \
+    # Utilities
     neovim \
     && rm -rf /var/lib/apt/lists/*
 
+# Global Middleware Configuration
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-# Mount config/cyclonedds.xml from the host at /config to override this path.
 ENV CYCLONEDDS_URI=/config/cyclonedds.xml
 
-# ── Bot-only dependencies ───────────────────────────────────────────────────────
-# (build toolchain + headers needed to compile unitree_sdk2 / CycloneDDS from source)
-RUN if [ "$BUILD_TARGET" = "bot" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends \
-            build-essential \
-            cmake \
-            git \
-            sudo \
-            libpython3-dev \
-            libeigen3-dev \
-            libyaml-cpp-dev \
-            libboost-all-dev \
-            libspdlog-dev \
-            libfmt-dev \
-            ros-foxy-rosidl-generator-dds-idl \
-            && rm -rf /var/lib/apt/lists/* ; \
-    elif [ "$ADD_USER" = "true" ]; then \
-        # local target can still request a non-root user; make sure sudo exists
-        apt-get update && apt-get install -y --no-install-recommends sudo \
-            && rm -rf /var/lib/apt/lists/* ; \
-    fi
+# ── 2. Clone Unitree Repositories ─────────────────────────────────────────────
+RUN mkdir -p /opt/unitree && \
+    git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/unitree/unitree_sdk2_python && \
+    git clone https://github.com/unitreerobotics/unitree_sdk2.git        /opt/unitree/unitree_sdk2 && \
+    git clone https://github.com/unitreerobotics/unitree_ros2.git        /opt/unitree/unitree_ros2
 
-# ── Clone Unitree repositories (bot only) ───────────────────────────────────────
-RUN if [ "$BUILD_TARGET" = "bot" ]; then \
-        mkdir -p /opt/unitree && \
-        git clone github.com/unitreerobotics/unitree_sdk2_python.git  /opt/unitree/unitree_sdk2_python && \
-        git clone github.com/unitreerobotics/unitree_sdk2.git         /opt/unitree/unitree_sdk2 && \
-        git clone github.com/unitreerobotics/unitree_ros2.git         /opt/unitree/unitree_ros2 ; \
-    fi
-
-# ── Build CycloneDDS from source (bot only, releases/0.10.x) ──────────────────
-# The apt version is too old for both unitree_sdk2_python and unitree_ros2.
-# One clone is shared between the standalone cmake install and the ROS workspace.
-RUN if [ "$BUILD_TARGET" = "bot" ]; then \
-        git clone github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x /opt/unitree/cyclonedds && \
-        cmake -S /opt/unitree/cyclonedds \
-              -B /opt/unitree/cyclonedds/build \
-              -DCMAKE_INSTALL_PREFIX=/opt/unitree/cyclonedds/install && \
-        cmake --build /opt/unitree/cyclonedds/build --target install --parallel "$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))" ; \
-    fi
+# ── 3. Build CycloneDDS 0.10.x From Source ────────────────────────────────────
+RUN git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x /opt/unitree/cyclonedds && \
+    cmake -S /opt/unitree/cyclonedds \
+          -B /opt/unitree/cyclonedds/build \
+          -DCMAKE_INSTALL_PREFIX=/opt/unitree/cyclonedds/install && \
+    cmake --build /opt/unitree/cyclonedds/build --target install --parallel "$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))"
 
 ENV CYCLONEDDS_HOME=/opt/unitree/cyclonedds/install
 
-# ── Build rmw_cyclonedds in the unitree_ros2 ROS workspace (bot only) ─────────
-RUN if [ "$BUILD_TARGET" = "bot" ]; then \
-        mkdir -p /opt/unitree/unitree_ros2/cyclonedds_ws/src && \
-        git clone github.com/ros2/rmw_cyclonedds -b foxy \
-            /opt/unitree/unitree_ros2/cyclonedds_ws/src/rmw_cyclonedds && \
-        ln -s /opt/unitree/cyclonedds \
-              /opt/unitree/unitree_ros2/cyclonedds_ws/src/cyclonedds && \
-        bash -c "source /opt/ros/foxy/setup.bash && \
-                 cd /opt/unitree/unitree_ros2/cyclonedds_ws && \
-                 LD_LIBRARY_PATH=/opt/ros/foxy/lib:$LD_LIBRARY_PATH \
-                 colcon build --packages-select cyclonedds" ; \
-    fi
+# ── 4. Build custom rmw_cyclonedds Workspace ──────────────────────────────────
+RUN mkdir -p /opt/unitree/unitree_ros2/cyclonedds_ws/src && \
+    git clone https://github.com/ros2/rmw_cyclonedds -b foxy \
+        /opt/unitree/unitree_ros2/cyclonedds_ws/src/rmw_cyclonedds && \
+    ln -s /opt/unitree/cyclonedds \
+          /opt/unitree/unitree_ros2/cyclonedds_ws/src/cyclonedds && \
+    bash -c "source /opt/ros/foxy/setup.bash && \
+             cd /opt/unitree/unitree_ros2/cyclonedds_ws && \
+             LD_LIBRARY_PATH=/opt/ros/foxy/lib:\$LD_LIBRARY_PATH \
+             colcon build --packages-select cyclonedds"
 
-# ── Shell environment ──────────────────────────────────────────────────────────
+# ── 5. Build & Install Unitree SDKs ───────────────────────────────────────────
+# Install Python SDK Wrapper
+RUN pip3 install /opt/unitree/unitree_sdk2_python
+
+# Build & Install C++ SDK
+RUN cmake -S /opt/unitree/unitree_sdk2 \
+          -B /opt/unitree/unitree_sdk2/build \
+          -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /opt/unitree/unitree_sdk2/build --parallel "$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))" && \
+    cmake --install /opt/unitree/unitree_sdk2/build
+
+# ── 6. Environment Setup ──────────────────────────────────────────────────────
 RUN echo "source /opt/ros/foxy/setup.bash" >> /etc/bash.bashrc && \
-    if [ "$BUILD_TARGET" = "bot" ]; then \
-        echo "source /opt/unitree/unitree_ros2/cyclonedds_ws/install/setup.bash" >> /etc/bash.bashrc ; \
-    fi
+    echo "source /opt/unitree/unitree_ros2/cyclonedds_ws/install/setup.bash" >> /etc/bash.bashrc
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Optional build steps
-# ══════════════════════════════════════════════════════════════════════════════
-
-# INSTALL_PY_SDK — pip-install unitree_sdk2_python (bot only, needs the clone above)
-RUN if [ "$INSTALL_PY_SDK" = "true" ] && [ "$BUILD_TARGET" = "bot" ]; then \
-        pip3 install /opt/unitree/unitree_sdk2_python; \
-    fi
-
-# BUILD_SDK — cmake-build and install the C++ unitree_sdk2 (bot only)
-RUN if [ "$BUILD_SDK" = "true" ] && [ "$BUILD_TARGET" = "bot" ]; then \
-        cmake -S /opt/unitree/unitree_sdk2 \
-              -B /opt/unitree/unitree_sdk2/build \
-              -DCMAKE_BUILD_TYPE=Release && \
-        cmake --build /opt/unitree/unitree_sdk2/build --parallel "$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))" && \
-        cmake --install /opt/unitree/unitree_sdk2/build; \
-    fi
-
-# ADD_USER — create a non-root passwordless-sudo user (works for local or bot)
-RUN if [ "$ADD_USER" = "true" ]; then \
-        groupadd --gid "$USER_GID" "$USERNAME" && \
-        useradd --uid "$USER_UID" --gid "$USER_GID" -m -s /bin/bash "$USERNAME" && \
-        echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$USERNAME" && \
-        chmod 0440 /etc/sudoers.d/"$USERNAME"; \
-    fi
-
+WORKDIR /root
 CMD ["bash"]
